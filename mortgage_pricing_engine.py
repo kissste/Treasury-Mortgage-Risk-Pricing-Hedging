@@ -1,9 +1,10 @@
-from QuantLib.QuantLib import HestonSLVFDMModel, IborIndex, Schedule
+from QuantLib.QuantLib import ForwardRateAgreement, Futures, HestonSLVFDMModel, IborIndex, Schedule
 import QuantLib as ql
 import numpy as np
 import pandas as pd
 from datetime import date
 from mortgage_pricing_engine_bootstrapping import *
+from mortgage_pricing_engine_ontherun import *
 from pandas.core import base
 
 def value_mortgage(mortgage, calc_date, curves, rates):
@@ -65,20 +66,20 @@ def value_mortgage(mortgage, calc_date, curves, rates):
     #print([dt for dt in schedule])
 
     #forecast_yield = ql.YieldTermStructureHandle(ql.FlatForward(calculation_date, dividend_rate, day_count))
-    #yts = ql.YieldTermStructureHandle(ql.FlatForward(2, ql.TARGET(), 0.5, ql.Actual360()))
+    #yts = ql.YieldTermStructureHandle(ql.FlatForward(2, ql.TARGET(), 0.5, dayCounter))
 
     #yts = forecast_yield = prep_curve(calculation_date)
 
     fytsBase = curves[0]
     ytsBase = curves[0]
 
-    iborIndexBase = ql.Libor('MyIndex', ql.Period('1M'), 2, ql.USDCurrency(), ql.TARGET(), ql.Actual360()
+    iborIndexBase = ql.Libor('SK1MBase', ql.Period('1M'), 2, ql.USDCurrency(), ql.TARGET(), dayCounter
         , fytsBase)
     iborIndexBase.addFixing(ql.Date(2,7,2021), 0.01)
 
     tp = 0.0150 #starting point
-    fixedLeg = ql.FixedRateLeg(schedulerBase, ql.Actual360(), notionals, [tp])
-    floatLeg = ql.IborLeg(notionals, schedulerBase, iborIndexBase, ql.Actual360(), ql.ModifiedFollowing, fixingDays=[2])
+    fixedLeg = ql.FixedRateLeg(schedulerBase, dayCounter, notionals, [tp])
+    floatLeg = ql.IborLeg(notionals, schedulerBase, iborIndexBase, dayCounter, conventionMD, fixingDays=[2])
     swap = ql.Swap(fixedLeg, floatLeg)
 
     #l1 = ql.CashFlows.npv(fixedLeg, yts, True)
@@ -99,15 +100,15 @@ def value_mortgage(mortgage, calc_date, curves, rates):
     #print(l2)
 
     tp1 = tp + 1.0/10000.0
-    fixedLeg1 = ql.FixedRateLeg(schedulerBase, ql.Actual360(), notionals, [tp1])
+    fixedLeg1 = ql.FixedRateLeg(schedulerBase, dayCounter, notionals, [tp1])
     swap1 = ql.Swap(fixedLeg1, floatLeg)
     swap1.setPricingEngine(engineBase)
-    s1 = swap1.NPV()
+    s1Hedge = swap1.NPV()
     #print('s1:',tp1, s1)
 
-    tp2 = tp + s/(s-s1)*(tp1-tp)
+    tp2 = tp + s/(s-s1Hedge)*(tp1-tp)
 
-    fixedLeg2 = ql.FixedRateLeg(schedulerBase, ql.Actual360(), notionals, [tp2])
+    fixedLeg2 = ql.FixedRateLeg(schedulerBase, dayCounter, notionals, [tp2])
     swap2 = ql.Swap(fixedLeg2, floatLeg)
     swap2.setPricingEngine(engineBase)
     s2 = swap2.NPV()
@@ -121,60 +122,63 @@ def value_mortgage(mortgage, calc_date, curves, rates):
     #print(swap.legBPS(0))
 
     tp = tp2
-    baseNPV = s2
+    baseMtgNPV = s2
 
     #Calculate Risk 
-    fixedLeg = ql.FixedRateLeg(schedulerBase, ql.Actual360(), notionals, [tp])
+    fixedLeg = ql.FixedRateLeg(schedulerBase, dayCounter, notionals, [tp])
     for i in range(len(curves)-1,-1,-1):
         fyts = curves[i]
         yts = curves[i]
         
-        iborIndex = ql.Libor('MyIndex', ql.Period('1M'), 2, ql.USDCurrency(), ql.TARGET(), ql.Actual360(), fyts)
+        iborIndex = ql.Libor('SK1M', ql.Period('1M'), 2, ql.USDCurrency(), ql.TARGET(), dayCounter, fyts)
         iborIndex.addFixing(ql.Date(2,7,2021), 0.01)
-        floatLeg = ql.IborLeg(notionals, schedulerBase, iborIndex, ql.Actual360(), ql.ModifiedFollowing, fixingDays=[2])
+        floatLeg = ql.IborLeg(notionals, schedulerBase, iborIndex, dayCounter, conventionMD, fixingDays=[2])
         swap = ql.Swap(fixedLeg, floatLeg)
         engine = ql.DiscountingSwapEngine(yts)
         swap.setPricingEngine(engine)
-        s1 = swap.NPV()
+        s1Mtg = swap.NPV()
         if i == 0: 
-            baseNPV = s1
-            reportNPV = s1
+            baseMtgNPV = s1Mtg
+            deltaMtg = s1Mtg
+            continue
         else:
-            reportNPV = s1 - baseNPV            
-        label = rates[i-1][0] if i > 0 else 'Base'
-        print('sx:', i, label, reportNPV)
+            deltaMtg = s1Mtg - baseMtgNPV
+        s = rates[i-1]                     
+        label = s[0] if i > 0 else 'Base'
+        print('sx:', i, label, 'DeltaMtg:', deltaMtg)
 
         notionalsFlat = [1]
-        rateHedge = rates[i-1][2]
-        print(rates[i-1][3])
-        s = rates[i-1]
+        instrumentType = s[1]
+        rateHedge = s[2]
+        maturity = s[3]
 
-        helper = ql.SwapRateHelper(s[2], s[3], s[4], s[5], s[6], s[7], s[8])
-        matDate = helper.maturityDate()
-        print(matDate)
+        if instrumentType == 'Swap':
+            helper = ql.SwapRateHelper(s[2], s[3], s[4], s[5], s[6], s[7], s[8])
+            matDate = helper.maturityDate()
+            #print(maturity, rateHedge, matDate)
 
-        scheduler = ql.MakeSchedule(start_date, matDate, ql.Period('1m'), rule=ql.DateGeneration.Backward, convention=ql.ModifiedFollowing, calendar=ql.UnitedStates(ql.UnitedStates.Settlement))
+            deltaHedge = onTheRunSwapDelta(start_date, matDate, rateHedge, fytsBase, ytsBase, fyts, yts)            
+            hedgeNotional = deltaMtg / deltaHedge
+            
+            print('HedgeNotional:', hedgeNotional)
 
+        elif instrumentType == 'Future':
+            deltaHedge = onTheRunFutureDelta(maturity, rateHedge, fytsBase, ytsBase, fyts, yts)
 
-        fixedLegHedge = ql.FixedRateLeg(scheduler, ql.Actual360(), notionalsFlat, [rateHedge])
-        floatLegHedge = ql.IborLeg(notionalsFlat, scheduler, iborIndex, ql.Actual360(), ql.ModifiedFollowing, fixingDays=[2])        
-        swapHedge = ql.Swap(fixedLegHedge, floatLegHedge)
-        engine = ql.DiscountingSwapEngine(yts)
-        swapHedge.setPricingEngine(engine)
-        s1 = swapHedge.NPV()        
-        hedgeNotional = reportNPV/s1
-        print('Bumped', rateHedge, s1, hedgeNotional)
+            hedgeNotional = deltaMtg/deltaHedge
 
-        iborIndexBase = ql.Libor('MyIndex', ql.Period('1M'), 2, ql.USDCurrency(), ql.TARGET(), ql.Actual360()
-            , fytsBase)
-        iborIndexBase.addFixing(ql.Date(2,7,2021), 0.01)
-        fixedLegHedgeBase = ql.FixedRateLeg(scheduler, ql.Actual360(), notionalsFlat, [rateHedge])
-        floatLegHedgeBase = ql.IborLeg(notionalsFlat, scheduler, iborIndexBase, ql.Actual360(), ql.ModifiedFollowing, fixingDays=[2])        
-        swapHedgeBase = ql.Swap(fixedLegHedgeBase, floatLegHedgeBase)
-        engineBase = ql.DiscountingSwapEngine(ytsBase)
-        swapHedgeBase.setPricingEngine(engineBase)
-        s1Base = swapHedgeBase.NPV()        
-        print('Base  ', rateHedge, s1Base, hedgeNotional)
+            print('HedgeNotional:', hedgeNotional)
+
+        elif instrumentType == 'Deposit':
+            helper = ql.DepositRateHelper(rateHedge, maturity)
+            matDate = helper.maturityDate()
+            #print(matDate)
+
+            deltaHedge = onTheRunDepositDelta(settlementDate, matDate, rateHedge, ytsBase, yts)
+
+            if deltaHedge!=0:
+                hedgeNotional = deltaMtg/deltaHedge
+                print('HedgeNotional:', hedgeNotional)
 
 
 mortgage = {
@@ -202,8 +206,8 @@ ql.Settings.instance().evaluationDate = calculation_date
 tradeDate = calculation_date #ql.Date(4, ql.February, 2020)
 calendar = ql.TARGET()
 dayCounter = ql.Actual360()
-convention = ql.ModifiedFollowing
-settlementDate = calendar.advance(tradeDate, ql.Period(2, ql.Days), convention)  
+conventionMD = ql.ModifiedFollowing
+settlementDate = calendar.advance(tradeDate, ql.Period(2, ql.Days), conventionMD)  
 swapIndex = ql.USDLibor(ql.Period(3, ql.Months))
 frequency = ql.Annual
 
@@ -217,16 +221,16 @@ rates = [
     ('FUT 4', 'Future', 97.395, ql.IMM.nextDate(settlementDate + ql.Period(12, ql.Months)), swapIndex),
     ('FUT 5', 'Future', 97.395, ql.IMM.nextDate(settlementDate + ql.Period(15, ql.Months)), swapIndex),
     ('FUT 6', 'Future', 97.395, ql.IMM.nextDate(settlementDate + ql.Period(18, ql.Months)), swapIndex),
-    ('SWAP  2Y', 'Swap', 0.02795, ql.Period(2, ql.Years), calendar, frequency, convention, dayCounter, swapIndex),
-    ('SWAP  3Y', 'Swap', 0.03035, ql.Period(3, ql.Years), calendar, frequency, convention, dayCounter, swapIndex),
-    ('SWAP  4Y', 'Swap', 0.03275, ql.Period(4, ql.Years), calendar, frequency, convention, dayCounter, swapIndex),
-    ('SWAP  5Y', 'Swap', 0.03505, ql.Period(5, ql.Years), calendar, frequency, convention, dayCounter, swapIndex),
-    ('SWAP  6Y', 'Swap', 0.03715, ql.Period(6, ql.Years), calendar, frequency, convention, dayCounter, swapIndex),
-    ('SWAP  7Y', 'Swap', 0.03885, ql.Period(7, ql.Years), calendar, frequency, convention, dayCounter, swapIndex),
-    ('SWAP  8Y', 'Swap', 0.04025, ql.Period(8, ql.Years), calendar, frequency, convention, dayCounter, swapIndex),
-    ('SWAP  9Y', 'Swap', 0.04155, ql.Period(9, ql.Years), calendar, frequency, convention, dayCounter, swapIndex),
-    ('SWAP 10Y', 'Swap', 0.04265, ql.Period(10, ql.Years), calendar, frequency, convention, dayCounter, swapIndex),
-    ('SWAP 12Y', 'Swap', 0.04435, ql.Period(12, ql.Years), calendar, frequency, convention, dayCounter, swapIndex),
+    ('SWAP  2Y', 'Swap', 0.02795, ql.Period(2, ql.Years), calendar, frequency, conventionMD, dayCounter, swapIndex),
+    ('SWAP  3Y', 'Swap', 0.03035, ql.Period(3, ql.Years), calendar, frequency, conventionMD, dayCounter, swapIndex),
+    ('SWAP  4Y', 'Swap', 0.03275, ql.Period(4, ql.Years), calendar, frequency, conventionMD, dayCounter, swapIndex),
+    ('SWAP  5Y', 'Swap', 0.03505, ql.Period(5, ql.Years), calendar, frequency, conventionMD, dayCounter, swapIndex),
+    ('SWAP  6Y', 'Swap', 0.03715, ql.Period(6, ql.Years), calendar, frequency, conventionMD, dayCounter, swapIndex),
+    ('SWAP  7Y', 'Swap', 0.03885, ql.Period(7, ql.Years), calendar, frequency, conventionMD, dayCounter, swapIndex),
+    ('SWAP  8Y', 'Swap', 0.04025, ql.Period(8, ql.Years), calendar, frequency, conventionMD, dayCounter, swapIndex),
+    ('SWAP  9Y', 'Swap', 0.04155, ql.Period(9, ql.Years), calendar, frequency, conventionMD, dayCounter, swapIndex),
+    ('SWAP 10Y', 'Swap', 0.04265, ql.Period(10, ql.Years), calendar, frequency, conventionMD, dayCounter, swapIndex),
+    ('SWAP 12Y', 'Swap', 0.04435, ql.Period(12, ql.Years), calendar, frequency, conventionMD, dayCounter, swapIndex),
 ]
 
 curves = []

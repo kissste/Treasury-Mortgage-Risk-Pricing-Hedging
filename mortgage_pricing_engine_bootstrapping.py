@@ -46,10 +46,10 @@ def bootstrap_curves(calculation_date, rates):
     tradeDate = calculation_date #ql.Date(4, ql.February, 2020)
     calendar = ql.TARGET()
     dayCounter = ql.Actual360()
-    convention = ql.ModifiedFollowing
-    settlementDate = calendar.advance(tradeDate, ql.Period(2, ql.Days), convention)  
-    swapIndex = ql.USDLibor(ql.Period(3, ql.Months))
-    frequency = ql.Semiannual
+    conventionMD = ql.ModifiedFollowing
+    settlementDate = calendar.advance(tradeDate, ql.Period(2, ql.Days), conventionMD)  
+    #swapIndex = ql.USDLibor(ql.Period(3, ql.Months))
+    #frequency = ql.Annual
 
     # create curve builder object
     ql.Settings.instance().evaluationDate = tradeDate
